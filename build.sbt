@@ -2,6 +2,8 @@ import akka.{ AutomaticModuleName, CopyrightHeaderForBuild, Dependencies, Parado
 
 ThisBuild / scalafixScalaBinaryVersion := scalaBinaryVersion.value
 
+ThisBuild / scalacOptions += "-g:vars"
+
 scalaVersion := Dependencies.allScalaVersions.head
 
 enablePlugins(
