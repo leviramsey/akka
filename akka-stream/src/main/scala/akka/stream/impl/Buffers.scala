@@ -10,6 +10,7 @@ import scala.collection.mutable
 
 import akka.annotation.{ InternalApi, InternalStableApi }
 import akka.stream._
+import akka.util.ConstantFun
 
 /**
  * INTERNAL API
@@ -37,9 +38,22 @@ private[akka] object Buffer {
   def apply[T](size: Int, effectiveAttributes: Attributes): Buffer[T] =
     apply(size, effectiveAttributes.mandatoryAttribute[ActorAttributes.MaxFixedBufferSize].size)
 
-  @InternalStableApi def apply[T](size: Int, max: Int): Buffer[T] =
+  // leaving the old implementation for benchmarking...
+  def oldApply[T](size: Int, max: Int): Buffer[T] =
     if (size < FixedQueueSize || size < max) FixedSizeBuffer(size)
     else new BoundedBuffer(size)
+
+  @InternalStableApi def apply[T](size: Int, max: Int): Buffer[T] =
+    if (size < FixedQueueSize || size < max) FixedSizeBuffer(size)
+    else {
+      val fixedSize = FixedQueueSize.min(max)
+      val dynamicSize = size - fixedSize
+
+      new ChainedBuffer(
+        headBuffer = FixedSizeBuffer(fixedSize),
+        tailBuffer = new BoundedBuffer.DynamicQueue(dynamicSize),
+        onEnqueueToHead = ConstantFun.scalaAnyToUnit)
+    }
 }
 
 /**
