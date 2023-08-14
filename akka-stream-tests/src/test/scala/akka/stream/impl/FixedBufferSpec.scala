@@ -139,7 +139,7 @@ class FixedBufferSpec extends StreamSpec {
     }
 
     "produce BoundedBuffers when capacity > max-fixed-buffer-size" in {
-      Buffer(Int.MaxValue, default) shouldBe a[BoundedBuffer[_]]
+      Buffer(Int.MaxValue, default) shouldBe a[ChainedBuffer[_]]
     }
 
     "produce FixedSizeBuffers when capacity < max-fixed-buffer-size" in {
