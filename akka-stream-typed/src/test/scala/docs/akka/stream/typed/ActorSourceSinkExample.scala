@@ -114,7 +114,7 @@ object ActorSourceSinkExample {
     // #actor-source-with-backpressure
   }
 
-  def compileOnlyAcotrRef() = {
+  def compileOnlyActorRef() = {
     implicit val system: ActorSystem[_] = ActorSystem(Behaviors.empty, "ActorSourceSinkExample")
 
     def targetActor(): ActorRef[Protocol] = ???

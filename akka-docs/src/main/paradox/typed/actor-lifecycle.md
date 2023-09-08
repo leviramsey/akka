@@ -99,7 +99,7 @@ stop actors and services in a specific order.
 
 @@@ Note
 
-In the classic counter part, the @apidoc[akka.actor.ActorSystem], the root actor was provided out of the box and you
+In the classic counterpart, the @apidoc[akka.actor.ActorSystem], the root actor was provided out of the box and you
 could spawn top-level actors from the outside of the `ActorSystem` using `actorOf`. @ref:[SpawnProtocol](#spawnprotocol)
 is a tool that mimics the old style of starting up actors.
 

@@ -224,7 +224,7 @@ package docs.serialization {
       //#programmatic-typed
       import akka.actor.typed.ActorSystem
 
-      val system = ActorSystem(Behaviors.empty, "example")
+      val system = ActorSystem("example")
 
       // Get the Serialization Extension
       val serialization = SerializationExtension(system)

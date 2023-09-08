@@ -184,8 +184,7 @@ public class SerializationDocTest {
 
   public void demonstrateTheProgrammaticAPITyped() {
     // #programmatic-typed
-    akka.actor.typed.ActorSystem<Void> system =
-        akka.actor.typed.ActorSystem.create(Behaviors.empty(), "example");
+    akka.actor.typed.ActorSystem<Void> system = akka.actor.typed.ActorSystem.create("example");
 
     // Get the Serialization Extension
     Serialization serialization = SerializationExtension.get(system);

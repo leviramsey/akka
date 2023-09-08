@@ -229,6 +229,25 @@ object ActorSystem {
     apply(guardianBehavior, name, ActorSystemSetup.create(bootstrapSetup))
 
   /**
+   * Scala API: Shortcut for creating an actor system with `Behaviors.empty` as
+   * the guardian behavior.  Such an actor system is useful in applications where no
+   * guardian behavior is needed.
+   */
+  def apply(name: String): ActorSystem[Nothing] = apply(scaladsl.Behaviors.empty, name)
+
+  /**
+   * Scala API: Shortcut for creating an actor system named "system" with `Behaviors.empty` as
+   * the guardian behavior.  Such an actor system is useful in applications where no
+   * guardian behavior is needed.
+   */
+  def apply(): ActorSystem[Nothing] = apply("system") // can't use default arguments...
+
+  /**
+   * Shortcut for creating an actor system with a guardian which implements the [[SpawnProtocol]].
+   */
+  def spawner(name: String): ActorSystem[SpawnProtocol.Command] = apply(SpawnProtocol(), name)
+
+  /**
    * Java API: Create an ActorSystem
    */
   def create[T](guardianBehavior: Behavior[T], name: String): ActorSystem[T] =
@@ -259,6 +278,19 @@ object ActorSystem {
    */
   def create[T](guardianBehavior: Behavior[T], name: String, bootstrapSetup: BootstrapSetup): ActorSystem[T] =
     create(guardianBehavior, name, ActorSystemSetup.create(bootstrapSetup))
+
+  /**
+   * Java API: Shortcut for creating an actor system with `Behaviors.empty()` as
+   * the guardian behavior.  Such an actor system is useful in applications where no
+   * guardian behavior is needed.
+   */
+  def create(name: String): ActorSystem[Void] = apply(javadsl.Behaviors.empty, name)
+
+  /**
+   * Java API: Shortcut for creating an actor system named "system" with `Behaviors.empty()`
+   * as the guardian behavior.
+   */
+  def create(): ActorSystem[Void] = apply(javadsl.Behaviors.empty, "system")
 
   /**
    * Create an ActorSystem based on the classic [[akka.actor.ActorSystem]]
