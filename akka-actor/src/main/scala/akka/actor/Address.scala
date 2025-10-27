@@ -7,12 +7,12 @@ import java.net.MalformedURLException
 import java.net.URI
 import java.net.URISyntaxException
 import java.util.Optional
-
 import scala.annotation.tailrec
 import scala.collection.immutable
 import scala.jdk.OptionConverters._
-
 import akka.annotation.InternalApi
+
+import scala.annotation.nowarn
 
 /**
  * The address specifies the physical location under which an Actor can be
@@ -65,8 +65,8 @@ final case class Address private[akka] (protocol: String, system: String, host: 
    * entity.
    */
   def hasGlobalScope: Boolean = host.isDefined
-
   // store hashCode
+  @nowarn("msg=deprecated")
   @transient override lazy val hashCode: Int = scala.util.hashing.MurmurHash3.productHash(this)
 
   /**
