@@ -343,8 +343,21 @@ object EventSourcedBehavior {
    */
   @ApiMayChange
   @InternalStableApi
+  @deprecated("Use withReplicatedEventsTransformation", "2.10.12")
   def withReplicatedEventTransformation(
       f: (State, EventWithMetadata[Event]) => EventWithMetadata[Event]): EventSourcedBehavior[Command, Event, State]
+
+  /**
+   * INTERNAL API: Invoke this transformation function when an event from another replica arrives, before persisting the event and
+   * before calling the ordinary event handler. The transformation function returns the updated event, and possibly
+   * additional events, and optionally additional metadata that will be stored together with the events.
+   *
+   * Only used when the entity is replicated.
+   */
+  @ApiMayChange
+  @InternalStableApi
+  def withReplicatedEventsTransformation(f: (State, EventWithMetadata[Event]) => Seq[EventWithMetadata[Event]])
+      : EventSourcedBehavior[Command, Event, State]
 }
 
 @FunctionalInterface
