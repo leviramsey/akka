@@ -69,7 +69,7 @@ Scala
 
 Java
 :  @@ vars
-   ```
+   ```ruby
    akka.actor.typed {
      extensions = ["jdocs.akka.extensions.ExtensionDocTest$DatabaseConnectionPool$Id"]
    }
