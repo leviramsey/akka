@@ -392,6 +392,23 @@ If there is a combination of indirectly connected nodes and a clean network part
 above decision with the ordinary decision, e.g. keep majority, after excluding suspicious failure detection
 observations.
 
+### Down all when indirectly connected
+
+Additional precautions are taken for the uncertainty that may follow from indirectly connected nodes.
+If indirectly connected decision would down more than a certain fraction of the cluster members, 
+SBR will instead down all nodes. This threshold can be configured with:
+
+```
+akka.cluster.split-brain-resolver {
+  down-all-when-indirectly-connected = 0.5
+}
+```
+
+The value can be `on`, `off`, or a double threshold between 0.0 and 1.0:
+- `on`: Always down all when there are indirectly connected
+- `off`: Disables the safeguard entirely
+- A double value: if more or equal to this fraction of members would be downed, down all instead
+
 ## Down all when unstable
 
 When reachability observations by the failure detector are changed the SBR decisions

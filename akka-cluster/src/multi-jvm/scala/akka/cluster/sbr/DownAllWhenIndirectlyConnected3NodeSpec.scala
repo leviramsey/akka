@@ -14,7 +14,7 @@ import akka.cluster.MultiNodeClusterSpec
 import akka.remote.testkit.Direction
 import akka.remote.testkit.MultiNodeConfig
 
-object IndirectlyConnected3NodeSpec extends MultiNodeConfig {
+object DownAllWhenIndirectlyConnected3NodeSpec extends MultiNodeConfig {
   val node1 = role("node1")
   val node2 = role("node2")
   val node3 = role("node3")
@@ -26,7 +26,7 @@ object IndirectlyConnected3NodeSpec extends MultiNodeConfig {
         downing-provider-class = "akka.cluster.sbr.SplitBrainResolverProvider"
         split-brain-resolver.active-strategy = keep-majority
         split-brain-resolver.stable-after = 6s
-        split-brain-resolver.down-all-when-indirectly-connected = off
+        split-brain-resolver.down-all-when-indirectly-connected = on
 
         run-coordinated-shutdown-when-down = off
       }
@@ -40,15 +40,15 @@ object IndirectlyConnected3NodeSpec extends MultiNodeConfig {
   testTransport(on = true)
 }
 
-class IndirectlyConnected3NodeSpecMultiJvmNode1 extends IndirectlyConnected3NodeSpec
-class IndirectlyConnected3NodeSpecMultiJvmNode2 extends IndirectlyConnected3NodeSpec
-class IndirectlyConnected3NodeSpecMultiJvmNode3 extends IndirectlyConnected3NodeSpec
+class DownAllWhenIndirectlyConnected3NodeSpecMultiJvmNode1 extends DownAllWhenIndirectlyConnected3NodeSpec
+class DownAllWhenIndirectlyConnected3NodeSpecMultiJvmNode2 extends DownAllWhenIndirectlyConnected3NodeSpec
+class DownAllWhenIndirectlyConnected3NodeSpecMultiJvmNode3 extends DownAllWhenIndirectlyConnected3NodeSpec
 
-class IndirectlyConnected3NodeSpec extends MultiNodeClusterSpec(IndirectlyConnected3NodeSpec) {
-  import IndirectlyConnected3NodeSpec._
+class DownAllWhenIndirectlyConnected3NodeSpec extends MultiNodeClusterSpec(DownAllWhenIndirectlyConnected3NodeSpec) {
+  import DownAllWhenIndirectlyConnected3NodeSpec._
 
-  "A 3-node cluster" should {
-    "avoid a split brain when two unreachable but can talk via third" in {
+  "A 3-node cluster with down-all-when-indirectly-connected=on" should {
+    "down all when two unreachable but can talk via third" in {
       val cluster = Cluster(system)
 
       runOn(node1) {
@@ -88,21 +88,8 @@ class IndirectlyConnected3NodeSpec extends MultiNodeClusterSpec(IndirectlyConnec
       }
       enterBarrier("unreachable")
 
-      runOn(node1) {
-        within(15.seconds) {
-          awaitAssert {
-            cluster.state.members.map(_.address) should ===(Set(node(node1).address))
-            cluster.state.members.foreach {
-              _.status should ===(MemberStatus.Up)
-            }
-          }
-        }
-      }
-
-      runOn(node2, node3) {
-        // downed
-        awaitCond(cluster.isTerminated, max = 15.seconds)
-      }
+      // all downed
+      awaitCond(cluster.isTerminated, max = 15.seconds)
 
       enterBarrier("done")
     }
