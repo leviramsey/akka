@@ -45,21 +45,6 @@ trait AsyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
   private val replayFilterWindowSize: Int = config.getInt("replay-filter.window-size")
   private val replayFilterMaxOldWriters: Int = config.getInt("replay-filter.max-old-writers")
 
-  private val numResequencers = config.getInt("num-resequencers")
-  private val resequencers = (1 to numResequencers).iterator
-    .map(_ => new ResequencerHandle(context.actorOf(Props(new Resequencer)), 1L))
-    .toVector
-
-  private def resequencerFor(actor: ActorRef): ResequencerHandle =
-    if (numResequencers == 1) resequencers.head
-    else {
-      val unsignedHash = actor.hashCode & 0x7FFFFFFF // set sign-bit to zero
-      resequencers(unsignedHash % numResequencers)
-    }
-
-  //private val resequencer = context.actorOf(Props(new Resequencer))
-  //private var resequencerCounter = 1L
-
   final def receive = receiveWriteJournal.orElse[Any, Unit](receivePluginInternal)
 
   final val receiveWriteJournal: Actor.Receive = {
@@ -67,6 +52,18 @@ trait AsyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
     val replayDebugEnabled: Boolean = config.getBoolean("replay-filter.debug")
     val eventStream = context.system.eventStream // used from Future callbacks
     implicit val ec: ExecutionContext = context.dispatcher
+
+    val numResequencers = config.getInt("num-resequencers")
+    val resequencers = (1 to numResequencers).iterator
+      .map(_ => new ResequencerHandle(context.actorOf(Props(new Resequencer)), 1L))
+      .toVector
+
+    def resequencerFor(actor: ActorRef): ResequencerHandle =
+      if (numResequencers == 1) resequencers.head
+      else {
+        val unsignedHash = actor.hashCode & 0x7FFFFFFF // set sign-bit to zero
+        resequencers(unsignedHash % numResequencers)
+      }
 
     {
       case WriteMessages(messages, persistentActor, actorInstanceId, bypassCircuitBreaker) =>
