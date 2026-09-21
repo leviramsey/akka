@@ -52,7 +52,6 @@ trait AsyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
     val replayDebugEnabled: Boolean = config.getBoolean("replay-filter.debug")
     val eventStream = context.system.eventStream // used from Future callbacks
     implicit val ec: ExecutionContext = context.dispatcher
-
     val numResequencers = config.getInt("num-resequencers")
     val resequencers = (1 to numResequencers).iterator
       .map(_ => new ResequencerHandle(context.actorOf(Props(new Resequencer)), 1L))
@@ -69,6 +68,8 @@ trait AsyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
       case WriteMessages(messages, persistentActor, actorInstanceId, bypassCircuitBreaker) =>
         val handle = resequencerFor(persistentActor)
         val cctr = handle.counter
+        // safe to modify this var in the receive, but not in the callback
+        // the resequencer actorref (a val) is safe to access in the callback
         handle.counter += messages.foldLeft(1)((acc, m) => acc + m.size)
 
         val atomicWriteCount = messages.count(_.isInstanceOf[AtomicWrite])

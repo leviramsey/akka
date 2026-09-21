@@ -273,15 +273,17 @@ class TwoResequencers extends PersistentActorJournalProtocolSpec(2) {
         @annotation.tailrec
         def second(n: Int): (ActorRef, Int) = {
           if (n == Int.MinValue) {
-            fail("Iterated through almost 2^32 candidates without a parity change; today is not your lucky day")
+            fail("Iterated through almost 2^31 candidates without a parity change; today is not your lucky day")
           }
 
           val pid = s"test-$n"
           val candidate = startActor(pid)
           val isEven = (candidate.hashCode & 0x1) == 0
 
-          if (isEven == firstEven) second(n + 1)
-          else candidate -> n
+          if (isEven == firstEven) {
+            candidate ! PoisonPill
+            second(n + 1)
+          } else candidate -> n
         }
 
         val (secondSubject, secondPid) = second(8)
