@@ -14,6 +14,7 @@ import akka.pattern.CircuitBreakersRegistry
 import akka.pattern.pipe
 import akka.persistence._
 import akka.util.Helpers.toRootLowerCase
+import com.typesafe.config.ConfigValueType
 
 /**
  * Abstract journal, optimized for asynchronous, non-blocking writes.
@@ -45,6 +46,15 @@ trait AsyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
   private val replayFilterWindowSize: Int = config.getInt("replay-filter.window-size")
   private val replayFilterMaxOldWriters: Int = config.getInt("replay-filter.max-old-writers")
 
+  // For bincompat reasons, we can't have numResequencers be a val at this level, but
+  // we want to be able to fail immediately on the configuration being absent or not a number
+  // (if it's less than the minimum 1, conversely, we'll treat that as the default 1)
+  if (config.getValue("write-reply-ordering-groups").valueType != ConfigValueType.NUMBER) {
+    // a ConfigException.Missing is thrown by getValue if not present (should not happen since
+    // journal defaults are merged in, but...)
+    throw new IllegalArgumentException("write-reply-ordering-groups must be a positive integer")
+  }
+
   final def receive = receiveWriteJournal.orElse[Any, Unit](receivePluginInternal)
 
   final val receiveWriteJournal: Actor.Receive = {
@@ -52,7 +62,7 @@ trait AsyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
     val replayDebugEnabled: Boolean = config.getBoolean("replay-filter.debug")
     val eventStream = context.system.eventStream // used from Future callbacks
     implicit val ec: ExecutionContext = context.dispatcher
-    val numResequencers = config.getInt("num-resequencers")
+    val numResequencers = config.getInt("write-reply-ordering-groups").max(1)
     val resequencers = (1 to numResequencers).iterator
       .map(_ => new ResequencerHandle(context.actorOf(Props(new Resequencer)), 1L))
       .toVector
@@ -359,5 +369,5 @@ private[persistence] object AsyncWriteJournal {
     }
   }
 
-  class ResequencerHandle(val resequencer: ActorRef, var counter: Long)
+  final class ResequencerHandle(val resequencer: ActorRef, var counter: Long)
 }
