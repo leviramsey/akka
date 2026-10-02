@@ -9,6 +9,7 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.util.{ Failure, Success, Try }
 import scala.util.control.NonFatal
+
 import akka.actor._
 import akka.pattern.CircuitBreakersRegistry
 import akka.pattern.pipe
@@ -52,16 +53,11 @@ trait AsyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
     val replayDebugEnabled: Boolean = config.getBoolean("replay-filter.debug")
     val eventStream = context.system.eventStream // used from Future callbacks
     implicit val ec: ExecutionContext = context.dispatcher
-    val numResequencers = config.getInt("write-reply-ordering-groups")
-    require(numResequencers > 0, "must have positive number of write-reply-ordering-groups")
+    val (hasher, numResequencers) = writeReplyGroupAssignor(context.system, self)
 
     val resequencers = Vector.fill(numResequencers)(new ResequencerHandle(context.actorOf(Props(new Resequencer)), 1L))
 
-    def resequencerFor(actor: ActorRef): ResequencerHandle =
-      if (numResequencers == 1) resequencers.head
-      else {
-        resequencers(hashForResequencing(actor) % numResequencers)
-      }
+    def resequencerFor(actor: ActorRef): ResequencerHandle = resequencers(hasher(actor))
 
     {
       case WriteMessages(messages, persistentActor, actorInstanceId, bypassCircuitBreaker) =>
@@ -341,7 +337,17 @@ private[persistence] object AsyncWriteJournal {
     }
   }
 
-  final class ResequencerHandle(val resequencer: ActorRef, var counter: Long)
+  private final class ResequencerHandle(val resequencer: ActorRef, var counter: Long)
 
-  def hashForResequencing(actor: ActorRef): Int = actor.hashCode & 0x7FFFFFFF
+  private[journal] def writeReplyGroupAssignor(system: ActorSystem, journal: ActorRef): (ActorRef => Int, Int) = {
+    val config = Persistence(system).configFor(journal)
+    val max = config.getInt("max-write-reply-ordering-groups").max(1)
+    val setting = config.getInt("write-reply-ordering-groups")
+
+    require(setting > 0, s"must have positive number of write-reply-ordering-groups, was [$setting]")
+    require(setting <= max, s"must have no more than [$max] write-reply-ordering-groups, was [$setting]")
+
+    val hasher = (actor: ActorRef) => (actor.hashCode & 0x7FFFFFFF) % setting
+    hasher -> setting
+  }
 }

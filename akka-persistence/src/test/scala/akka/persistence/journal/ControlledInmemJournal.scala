@@ -10,13 +10,14 @@ import scala.concurrent.Future
 import scala.concurrent.Promise
 import scala.util.Try
 
+import com.typesafe.config.ConfigFactory
+
 import akka.actor.ActorRef
 import akka.pattern.ask
 import akka.persistence.AtomicWrite
 import akka.persistence.journal.inmem.InmemJournal
 import akka.testkit.TestProbe
 import akka.util.Timeout
-import com.typesafe.config.ConfigFactory
 
 object ControlledInmemJournal {
 
@@ -29,8 +30,7 @@ object ControlledInmemJournal {
    *  If the `promise` succeeds and the completed sequence's length equals the length of `messages` (else this will be treated
    *  as a failure, as above), the persist will succeed, resulting in the journal actor responding with `WriteMessagesSuccessful`
    *  followed by `WriteMessageSuccess` for each message (if the journal received any `NonPersistentRepr`s, `LoopMessageSuccess`es
-   *  may be interspersed) corresponding to a successful [[Try]]; messages corresponding to an unsuccessful [[Try]] will have a
-   *  `WriteMessageRejected` response.
+   *  may be interspersed).  Nesting failures inside a successful promise is not presently supported.
    *
    *  The resulting promise must eventually be completed, else other persist/persistAsync operations against the journal
    *  might not be observed to succeed or fail in the [[JournalProtocol]] (even if their respective promises were completed)
@@ -43,7 +43,6 @@ object ControlledInmemJournal {
     |akka.persistence.journal.plugin = "akka.persistence.journal.controlled-in-mem"
     """.stripMargin)
 
-  // yes this is synchronized on a global, but this is for testing
   /** Obtain a probe for the given instance ID which receives [[WriteMessagesAttempt]] messages, throws if not found */
   def getProbe(instanceId: String): TestProbe = synchronized(_current(instanceId)._1)
 
@@ -73,7 +72,8 @@ object ControlledInmemJournal {
   private[this] var _current = Map.empty[String, (TestProbe, ActorRef)]
 }
 
-/** An in-memory journal that exposes a [[akka.testkit.TestProbe]] allowing a test suite to control the result
+/**
+ *  An in-memory journal that exposes a [[akka.testkit.TestProbe]] allowing a test suite to control the result
  *  of persist/persistAsync operations.  Other operations (reads, deletes) are the usual in-memory journal.
  *
  *  Configure the actor system using {{{ControlledInmemJournal.config(String)}}} and
@@ -114,6 +114,7 @@ final class ControlledInmemJournal extends InmemJournal {
 
     case PromiseFinished(p) =>
       if (promises(p)) {
+        // ensure that the promise completes before removal
         p.tryFailure(new CancellationException("promise finished"))
         promises = promises.excl(p)
       }
@@ -125,23 +126,26 @@ final class ControlledInmemJournal extends InmemJournal {
 
     val result =
       promise.future.flatMap { results =>
-        if (results.length == messages.length) {
+        // if this journal supported journal rejections (maybe down the road TODO), those
+        // would be represented as failures in the results
+        val successfulResults = results.filter(_.isSuccess)
+
+        if (successfulResults.length == messages.length) {
           val superPromise = Promise[Seq[Try[Unit]]]()
           // we are executing outside of the journal actor now, and the InmemJournal's journal
           // depends on the journal actor for synchronization
           self ! WriteMessagesAttempt(messages, superPromise)
           superPromise.future
         } else
-          Future.failed(
-            new AssertionError(
-              s"Mismatch between ${messages.length} atomic writes and ${results.length} results in completed promise"))
+          Future.failed(new AssertionError(
+            s"Mismatch between ${messages.length} atomic writes and ${successfulResults.length} successful results in completed promise"))
       }(ExecutionContext.parasitic)
 
     val ret = Promise[Seq[Try[Unit]]]()
     promises = promises.incl(ret)
     ret.completeWith(result)
     ret.future.onComplete { _ =>
-      context.self ! PromiseFinished(ret)
+      self ! PromiseFinished(ret)
     }(ExecutionContext.parasitic)
     ret.future
   }

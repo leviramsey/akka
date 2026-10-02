@@ -16,10 +16,12 @@ import scala.util.Success
 import scala.util.Try
 import scala.util.control.NoStackTrace
 
+import com.typesafe.config.ConfigFactory
+import org.scalatest.BeforeAndAfterEach
+
 import akka.Done
 import akka.actor.ActorLogging
 import akka.actor.ActorRef
-import akka.actor.PoisonPill
 import akka.actor.Props
 import akka.pattern.BackoffOpts
 import akka.pattern.BackoffSupervisor
@@ -29,39 +31,32 @@ import akka.pattern.retry
 import akka.persistence.PersistentActor
 import akka.testkit.AkkaSpec
 import akka.testkit.ImplicitSender
-import akka.util.Timeout
-import com.typesafe.config.ConfigFactory
-import org.scalatest.BeforeAndAfterEach
 import akka.testkit.TestProbe
+import akka.util.Timeout
 
 object JournalReplyOrderingSpec {
-  def config(specName: String, numResequencers: Int) =
+  def config(specName: String, groups: Int) =
     ConfigFactory.parseString(s"""
-        |akka.persistence.journal.controlled-in-mem.write-reply-ordering-groups = $numResequencers
+        |akka.persistence.journal.controlled-in-mem.write-reply-ordering-groups = $groups
         """.stripMargin).withFallback(ControlledInmemJournal.config(specName))
 
-  private def supervisedProps(pid: String, expected: Int, modulo: Int, probe: ActorRef): Props = {
+  private def supervisedProps(pid: String, expected: Int, probe: ActorRef): Props =
     BackoffSupervisor.props(
       BackoffOpts
         .onStop(
-          childProps = persistentActorProps(pid, expected, modulo, probe),
+          childProps = persistentActorProps(pid, expected, probe),
           childName = pid,
-          minBackoff = 10.milli,
+          minBackoff = 10.millis,
           maxBackoff = 10.millis,
           randomFactor = 0.0)
         .withReplyWhileStopped(BackingOff))
-  }
 
-  private def persistentActorProps(pid: String, expected: Int, modulo: Int, onSpawn: ActorRef) =
+  private def persistentActorProps(pid: String, expected: Int, onSpawn: ActorRef) =
     Props(new PersistentActor with ActorLogging {
       override def preStart(): Unit = {
-        log.info("Starting actor for {}", persistenceId)
-        if ((AsyncWriteJournal.hashForResequencing(self) % modulo) != expected) {
+        val (groupAssignor, _) = AsyncWriteJournal.writeReplyGroupAssignor(context.system, journal)
+        if (groupAssignor(self) != expected) {
           // effectively a "lane departure warning", since we can't change our UID
-          // the only thing we can do is stop.  `PersistentActor.aroundPreStart()`
-          // will have requested a recovery permit, but the permitter is watching us
-          // so there will be no permit leak if we stop here before processing
-          // the granted permit
           super.preStart() // pro-forma: PersistentActor doesn't override preStart()
           context.stop(self) // supervisor will restart
         } else {
@@ -86,25 +81,16 @@ object JournalReplyOrderingSpec {
       }
 
       override def receiveCommand = {
-        case "cull" =>
-          context.parent ! PoisonPill
-          context.stop(self)
-
         case "get-persistence-id" =>
           sender() ! persistenceId
 
         case (s: String, p: Promise[Done @unchecked]) =>
           pending = p
           if ((lastSequenceNr % 3) == 0) {
-            // handler will be called twice in this case
-            var promise = p
             // alternating persists of 2 then 1
             persistAll(Seq(s, s"$s again")) { _ =>
-              if (promise ne null) {
-                promise.success(Done)
-                pending = null
-                promise = null
-              }
+              p.trySuccess(Done)
+              pending = null
             }
           } else {
             persist(s) { _ =>
@@ -127,23 +113,18 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
     with BeforeAndAfterEach {
   import JournalReplyOrderingSpec._
 
-  require(numResequencers > 0, "must have a positive number of resequencers")
-
   import system.dispatcher
 
   def journalProbe = ControlledInmemJournal.getProbe(specName)
 
   val successfulSpawnProbe = new TestProbe(system)
 
-  final def persistentActorCongruentWith(pid: String, n: Int): ActorRef = {
-    require(n < numResequencers && n >= 0)
-
-    system.actorOf(supervisedProps(pid, n, numResequencers, successfulSpawnProbe.ref))
-  }
+  final def persistentActorCongruentWith(pid: String, n: Int): ActorRef =
+    system.actorOf(supervisedProps(pid, n, successfulSpawnProbe.ref))
 
   // It doesn't particularly matter which group has multiple...
   val groupWithTwo = Random.nextInt(numResequencers)
-  log.info("Chose group {} to have two resequencers", groupWithTwo)
+  log.info("Chose group {} to have two actors", groupWithTwo)
 
   // using the same actors as much as we can
   val groups = (0 until numResequencers).iterator.map { group =>
@@ -203,35 +184,20 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
 
   case class State(
       asksByPid: Map[String, (Int, Future[Done])],
-      inOrder: Seq[(String, Int, Promise[Seq[Try[Unit]]])],
-      attemptsByGroup: Map[Int, Seq[(String, Int, Promise[Seq[Try[Unit]]])]]) {
+      inOrder: Seq[Attempt],
+      attemptsByGroup: Map[Int, Seq[Attempt]]) {
     def waiting(group: Int): Boolean =
       attemptsByGroup.get(group) match {
         case Some(attempts) if attempts.size > 1 =>
           // is there an attempt which is unfinished before an attempt which is finished?
-          attempts
-            .foldLeft(Option.empty[Boolean]) { (result, attempt) =>
-              def promise = attempt._3
-              result match {
-                case None =>
-                  // look for the earliest unfinished
-                  if (!promise.isCompleted) SomeFalse else None
-
-                case Some(false) =>
-                  // have seen an unfinished, now looking for a finished
-                  if (promise.isCompleted) SomeTrue else SomeFalse
-
-                case Some(true) => SomeTrue
-              }
-            }
-            .getOrElse(false)
+          attempts.dropWhile(_.promise.isCompleted).drop(1).exists(_.promise.isCompleted)
 
         case _ => false
       }
 
-    def success(n: Int): Option[(String, Boolean)] =
+    def complete(n: Int, succeed: Boolean): Option[(String, Boolean)] =
       if (n < inOrder.length) {
-        val (pid, count, promise) = inOrder(n)
+        val Attempt(pid, count, promise) = inOrder(n)
 
         if (asksByPid(pid)._2.isCompleted) {
           // no point in completing the promise if the future is already completed
@@ -239,21 +205,11 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
           None
         } else {
           val wasWaiting = waiting(pidToGroup(pid)._1)
-          promise.success(if (count == 1) oneSuccessUnit else twoSuccessUnit)
-          Some(pid -> wasWaiting)
-        }
-      } else None
-
-    def failure(n: Int): Option[(String, Boolean)] =
-      if (n < inOrder.length) {
-        val (pid, count, promise) = inOrder(n)
-
-        if (asksByPid(pid)._2.isCompleted) {
-          assert(promise.isCompleted, "ask should not have completed before persistence operation")
-          None
-        } else {
-          val wasWaiting = waiting(pidToGroup(pid)._1)
-          promise.failure(new RuntimeException("journal go boom") with NoStackTrace)
+          if (succeed) {
+            promise.success(if (count == 1) oneSuccessUnit else twoSuccessUnit)
+          } else {
+            promise.failure(new RuntimeException("journal go boom") with NoStackTrace)
+          }
           Some(pid -> wasWaiting)
         }
       } else None
@@ -262,11 +218,10 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
       asksByPid.get(pid).flatMap {
         case (group, _) =>
           attemptsByGroup.get(group).map { attempts =>
-            attempts.iterator.flatMap {
-              case (p, _, _) =>
-                asksByPid.get(p).map {
-                  case (_, ask) => p -> ask
-                }
+            attempts.iterator.flatMap { attempt =>
+              asksByPid.get(attempt.pid).map {
+                case (_, ask) => attempt.pid -> ask
+              }
             }.toMap
           }
       }
@@ -275,8 +230,7 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
     def completedAsks(pids: Seq[String]): State = copy(asksByPid = asksByPid.removedAll(pids))
   }
 
-  val SomeTrue = Some(true)
-  val SomeFalse = Some(false)
+  case class Attempt(pid: String, events: Int, promise: Promise[Seq[Try[Unit]]])
 
   s"A journal with $numResequencers write-reply ordering group(s)" must {
     def performAsks(): Map[String, (Int, Future[Done])] =
@@ -306,15 +260,13 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
 
     def setup(): State = {
       val asks = performAsks()
-      val attempts = receiveAttempts(1 + numResequencers)
+      val attempts = receiveAttempts(1 + numResequencers).map(Attempt.tupled)
 
-      State(asks, attempts, attempts.groupBy {
-        case (pid, _, _) => pidToGroup(pid)._1
-      })
+      State(asks, attempts, attempts.groupBy(attempt => pidToGroup(attempt.pid)._1))
     }
 
     (0 to numResequencers).toList.permutations.foreach { ordering =>
-      s"properly order write replies (ordering $ordering) (all success)" in {
+      def properlyOrders(failingAttempt: Option[Int]): Unit = {
         val state = setup()
 
         state.attemptsByGroup.foreach {
@@ -322,62 +274,21 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
           case (_, attempts)              => attempts.size shouldBe 1
         }
 
-        val finalState = ordering.foldLeft(state) { (state, toComplete) =>
-          val (pidCompleting, wasWaiting) = state.success(toComplete).get
-
-          state.asksInGroupByPid(pidCompleting) match {
-            case None                         => fail("No pending asks for pid that we just completed?")
-            case Some(asks) if asks.size == 1 =>
-              // only one in group, should definitely be completed
-              asks(pidCompleting).futureValue shouldBe Done
-              state.completedAsk(pidCompleting)
-
-            case Some(asks) if asks.size == 2 =>
-              val group = pidToGroup(pidCompleting)._1
-              val attempts = state.attemptsByGroup(group)
-              attempts.size shouldBe 2
-
-              if (attempts.head._1 == pidCompleting) {
-                asks(pidCompleting).futureValue shouldBe Done
-                if (wasWaiting) {
-                  val waitingPid = attempts(1)._1
-                  asks(waitingPid).futureValue shouldBe Done
-                  state.completedAsks(Seq(pidCompleting, waitingPid))
-                } else state.completedAsk(pidCompleting)
-              } else {
-                // second attempt from the group to reach the journal was completed
-                // if the first attempt from the group were completed, this would be a group of one
-                // thus: this is blocked behind the first attempt
-                val (firstPid, _, firstPromise) = attempts.head
-                firstPromise.isCompleted shouldBe false
-
-                a[TimeoutException] shouldBe thrownBy { Await.ready(asks(pidCompleting), 10.millis) }
-                a[TimeoutException] shouldBe thrownBy { Await.ready(asks(firstPid), 10.millis) }
-                state
-              }
-
-            case _ => fail("unexpected asks for group")
-          }
+        val pidToFail = failingAttempt.map { i =>
+          state.attemptsByGroup(groupWithTwo)(i).pid
         }
 
-        finalState.asksByPid shouldBe empty
-      }
-
-      s"properly order write replies (ordering $ordering) (first fails)" in {
-        val state = setup()
-
-        state.attemptsByGroup.foreach {
-          case (`groupWithTwo`, attempts) => attempts.size shouldBe 2
-          case (_, attempts)              => attempts.size shouldBe 1
-        }
-
-        val pidToFail = state.attemptsByGroup(groupWithTwo).head._1
-
         val finalState = ordering.foldLeft(state) { (state, toComplete) =>
-          val pidCompleting = state.inOrder(toComplete)._1
+          val pidCompleting = state.inOrder(toComplete).pid
           val group = pidToGroup(pidCompleting)._1
           val (_, wasWaiting) =
-            (if (pidCompleting == pidToFail) state.failure(toComplete) else state.success(toComplete)).get
+            (if (pidToFail.contains(pidCompleting)) {
+               val result = state.complete(toComplete, false)
+               // faiing the persist will stop and restart the actor, so validate that it restarted
+               // before we assert anything
+               successfulSpawnProbe.expectMsgType[ActorRef]
+               result
+             } else state.complete(toComplete, true)).get
 
           state.asksInGroupByPid(pidCompleting) match {
             case None => fail("No pending asks for the pid we just completed?")
@@ -389,16 +300,20 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
               val attempts = state.attemptsByGroup(group)
               attempts.size shouldBe 2
 
-              if (attempts.head._1 == pidCompleting) {
-                (the[RuntimeException] thrownBy { asks(pidCompleting).futureValue }).getMessage should include(
-                  "persist failed")
+              if (attempts.head.pid == pidCompleting) {
+                if (pidToFail.contains(pidCompleting)) {
+                  asks(pidCompleting).failed.futureValue.getMessage should include("persist failed")
+                } else {
+                  asks(pidCompleting).futureValue shouldBe Done
+                }
+
                 if (wasWaiting) {
-                  val waitingPid = attempts(1)._1
+                  val waitingPid = attempts(1).pid
                   asks(waitingPid).futureValue shouldBe Done
                   state.completedAsks(Seq(pidCompleting, waitingPid))
                 } else state.completedAsk(pidCompleting)
               } else {
-                val (firstPid, _, firstPromise) = attempts.head
+                val Attempt(firstPid, _, firstPromise) = attempts.head
                 firstPromise.isCompleted shouldBe false
 
                 a[TimeoutException] shouldBe thrownBy { Await.ready(asks(pidCompleting), 10.millis) }
@@ -411,12 +326,14 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
         }
 
         finalState.asksByPid shouldBe empty
-        // An actor should have failed and been restarted
-        successfulSpawnProbe.expectMsgType[ActorRef]
       }
+
+      s"properly order write replies (ordering $ordering) (all success)" in properlyOrders(None)
+
+      s"properly order write replies (ordering $ordering) (first fails)" in properlyOrders(Some(0))
     }
   }
 }
 
-class JournalReplyOrderingOneGroupSpec extends JournalReplyOrderingSpec("one", 1)
-class JournalReplyOrderingTwoGroupsSpec extends JournalReplyOrderingSpec("two", 2)
+class JournalReplyOrderingOneGroupSpec extends JournalReplyOrderingSpec("JournalReplyOrderingOneGroupSpec", 1)
+class JournalReplyOrderingTwoGroupsSpec extends JournalReplyOrderingSpec("JournalReplyOrderingTwoGroupsSpec", 2)

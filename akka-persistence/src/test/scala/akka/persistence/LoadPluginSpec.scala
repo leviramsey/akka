@@ -67,17 +67,20 @@ class LoadPluginSpec
 
     Map[String, Any]("zero" -> 0, "negative" -> -1, "not-a-number" -> """"boom!"""").foreach {
       case (whyBad, badValue) =>
-        s"fail to create with $whyBad resequencers" in {
+        s"fail to create with $whyBad write-reply ordering groups" in {
           val badConfig = ConfigFactory
             .parseString(s"akka.persistence.journal.inmem.write-reply-ordering-groups = $badValue")
             .withFallback(system.settings.config)
 
           val sys = ActorSystem(s"test-$whyBad", badConfig)
           val tk = new TestKit(sys)
-          val journal = Persistence(sys).journalFor("akka.persistence.journal.inmem")
-          tk.watch(journal)
-          tk.expectTerminated(journal)
-          sys.terminate()
+          try {
+            val journal = Persistence(sys).journalFor("akka.persistence.journal.inmem")
+            tk.watch(journal)
+            tk.expectTerminated(journal)
+          } finally {
+            TestKit.shutdownActorSystem(sys)
+          }
         }
     }
   }
