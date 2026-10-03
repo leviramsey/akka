@@ -244,7 +244,7 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
           pid -> (groupId -> p.future)
       }.toMap
 
-    def receiveAttempts(expected: Int): Vector[(String, Int, Promise[Seq[Try[Unit]]])] =
+    def receiveAttempts(expected: Int): Vector[Attempt] =
       journalProbe
         .receiveN(expected)
         .map {
@@ -252,7 +252,7 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
             messages shouldNot be(empty)
             assert(messages.size < 3, "only one or two events should be persisted")
             val pid = messages.head.persistenceId
-            (pid, messages.size, promise)
+            Attempt(pid, messages.size, promise)
 
           case _ => fail("unexpected message on journal probe")
         }
@@ -260,7 +260,7 @@ abstract class JournalReplyOrderingSpec(specName: String, numResequencers: Int)
 
     def setup(): State = {
       val asks = performAsks()
-      val attempts = receiveAttempts(1 + numResequencers).map(Attempt.tupled)
+      val attempts = receiveAttempts(1 + numResequencers)
 
       State(asks, attempts, attempts.groupBy(attempt => pidToGroup(attempt.pid)._1))
     }
